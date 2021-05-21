@@ -47,7 +47,7 @@ object main extends App {
 
   val result: (RDD[(String, (Iterable[String], Double))], Int) = convergence(QandAGroup,100000)
   println("converge after" + result._2 + " iterations")
-  val resultdf = result._1.map{x => (x._1, x._2._2)}.toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
+  val resultdf: Dataset[Row] = result._1.map{ x => (x._1, x._2._2)}.toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
   //val result = pageRank(QandAGroup).toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
   //val resultDF = result.toDF("result_id", "rank").orderBy(col("rank").desc).limit(1000)
   resultdf.show(10)
@@ -81,9 +81,7 @@ object main extends App {
 
   def pageRank[T: ClassTag](df: RDD[(T, (Iterable[T], Double))]): RDD[(T, (Iterable[T], Double))] = {
 
-//    var ranks: RDD[(T, Double)] = df.mapValues(_ => 1.0)
     val header: RDD[(T, Iterable[T])] = df.map(x => (x._1, x._2._1))
-    //val ranks: RDD[(T, Double)] = df.map(x => (x._1,x._2._2))
     val values: RDD[(Iterable[T], Double)] = df.values
     val contribs: RDD[(T, Double)] = values.flatMap{ case (list, rank) =>
       val size = list.size
@@ -91,17 +89,6 @@ object main extends App {
     }
     val ranks2: RDD[(T, Double)] =  contribs.reduceByKey(_ + _).mapValues(0.15 + 0.85 * _)
     val result: RDD[(T, (Iterable[T], Double))] = header.join(ranks2)
-
-
-//    for (i <- 1 to iter) {
-//      println("---iteration = "+ i + " ---")
-//      val contribs = df.join(ranks).values.flatMap { case (list, rank) =>
-//        val size = list.size
-//        list.map(id => (id, rank / size))
-//      }
-//      ranks = contribs.reduceByKey(_ + _).mapValues(0.15 + 0.85 * _)
-//    }
-//    ranks.sortBy(_._2)
     result.sortBy(_._2._2)
   }
 
@@ -112,7 +99,8 @@ object main extends App {
 
     val init_rank: RDD[T] = init.map(x => x._1)
     val subsequent_rank: RDD[T] = subsequent.map(x => x._1)
-    val score: RDD[Int] = init_rank.zip(subsequent_rank).map{
+
+    val score: RDD[Int] = init_rank.zipShuffle(subsequent_rank).map{
       item:(T,T) => item._1 == item._2
     }.map{
       if(_) 0 else 1}
@@ -124,6 +112,16 @@ object main extends App {
       convergence(subsequent, threshold, iter + 2)
     }
     else (subsequent,iter)
+  }
+
+
+  implicit class RichContext[T](rdd: RDD[T]) {
+    def zipShuffle[A](other: RDD[A])(implicit kt: ClassTag[T], vt: ClassTag[A]): RDD[(T, A)] = {
+      val otherKeyd: RDD[(Long, A)] = other.zipWithIndex().map { case (n, i) => i -> n }
+      val thisKeyed: RDD[(Long, T)] = rdd.zipWithIndex().map { case (n, i) => i -> n }
+      val joined = thisKeyed.join(otherKeyd).map(_._2)
+      joined
+    }
   }
 
   sc.stop
