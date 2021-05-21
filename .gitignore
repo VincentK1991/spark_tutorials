@@ -1,0 +1,7 @@
+# sbt
+target/
+project/
+out/
+resources/
+# max
+.DS_Store
