@@ -8,6 +8,7 @@ import org.apache.spark.sql._
 import com.google.cloud.spark.bigquery._
 import scala.collection.mutable
 import scala.reflect.ClassTag
+import annotation.tailrec
 
 object main extends App {
   val conf: SparkConf = new SparkConf().setMaster("local").setAppName("main")
@@ -43,32 +44,37 @@ object main extends App {
     .cache()
   println("total of == " + QandAGroup.count)
   println(" start page rank ")
-  val result = pageRank(QandAGroup).toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
-  //val resultDF = result.toDF("result_id", "rank").orderBy(col("rank").desc).limit(1000)
-  result.show(10)
-  print(" done with page rank ")
-  val users = spark.read.bigquery(baseQuery + "users").select(
-    $"id",
-    $"display_name",
-    $"reputation",
-    $"up_votes",
-    $"down_votes"
-    ).where($"id".isNotNull)
-  println("load users ")
 
-  val usersWithRank = result.as("result")
-    .join(users.as("users"),
-          result("result_id") === users("id")
-          )
-    .select("result.rank",
-      "result.result_id",
-            "users.display_name",
-            "users.reputation",
-            "users.up_votes",
-            "users.down_votes"
-            ).orderBy(col("result.rank").desc)
-  println(" join users ")
-  usersWithRank.show(10)
+  val result: (RDD[(String, (Iterable[String], Double))], Int) = convergence(QandAGroup,100000)
+  println("converge after" + result._2 + " iterations")
+  val resultdf = result._1.map{x => (x._1, x._2._2)}.toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
+  //val result = pageRank(QandAGroup).toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
+  //val resultDF = result.toDF("result_id", "rank").orderBy(col("rank").desc).limit(1000)
+  resultdf.show(10)
+  print(" done with page rank ")
+
+//  val users = spark.read.bigquery(baseQuery + "users").select(
+//    $"id",
+//    $"display_name",
+//    $"reputation",
+//    $"up_votes",
+//    $"down_votes"
+//    ).where($"id".isNotNull)
+//  println("load users ")
+//
+//  val usersWithRank = resultdf.as("result")
+//    .join(users.as("users"),
+//          resultdf("result_id") === users("id")
+//          )
+//    .select("result.rank",
+//      "result.result_id",
+//            "users.display_name",
+//            "users.reputation",
+//            "users.up_votes",
+//            "users.down_votes"
+//            ).orderBy(col("result.rank").desc)
+//  println(" join users ")
+//  usersWithRank.show(10)
 
 
   //Util.writeToFile(usersWithRank, resourcePath + "pageRank")
@@ -98,20 +104,26 @@ object main extends App {
 //    ranks.sortBy(_._2)
     result.sortBy(_._2._2)
   }
-  def convergence[T:ClassTag](df:RDD[(T, (Iterable[T], Double))], iter:Int, threshold:Int):Int = {
-    val init: RDD[(T,(Iterable[T], Double))] = pageRank(df)
-    val check: RDD[(T,(Iterable[T], Double))] = pageRank(init)
 
-    val score: RDD[Int] = init.zip(check).map{
-      item:((T,Double),(T,Double)) => item._1._1 == item._2._1
+  @tailrec
+  def convergence[T:ClassTag](df:RDD[(T, (Iterable[T], Double))], threshold:Int, iter:Int = 1): (RDD[(T,(Iterable[T], Double))], Int) = {
+    val init: RDD[(T,(Iterable[T], Double))] = pageRank(df)
+    val subsequent: RDD[(T,(Iterable[T], Double))] = pageRank(init)
+
+    val init_rank: RDD[T] = init.map(x => x._1)
+    val subsequent_rank: RDD[T] = subsequent.map(x => x._1)
+    val score: RDD[Int] = init_rank.zip(subsequent_rank).map{
+      item:(T,T) => item._1 == item._2
     }.map{
       if(_) 0 else 1}
     val sumScore: Int = score.sum().toInt
 
     if (sumScore > threshold){
-
+      println(" -- not converge yet -- ")
+      println(" -- run iteration " + iter + 2)
+      convergence(subsequent, threshold, iter + 2)
     }
-    else iter
+    else (subsequent,iter)
   }
 
   sc.stop
