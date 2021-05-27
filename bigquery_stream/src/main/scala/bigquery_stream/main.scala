@@ -42,42 +42,47 @@ object main extends App {
     .aggregateByKey(new mutable.HashSet[String])(_ + _, _ ++ _)
     .mapValues(x => (x.toIterable,1.0))
     .cache()
-  println("total of == " + QandAGroup.count)
-  println(" start page rank ")
 
-  val result: (RDD[(String, (Iterable[String], Double))], Int) = convergence(QandAGroup,100000)
-  println("converge after" + result._2 + " iterations")
-  val resultdf: Dataset[Row] = result._1.map{ x => (x._1, x._2._2)}.toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
-  //val result = pageRank(QandAGroup).toDF("result_id", "rank").limit(1000)//.orderBy(col("rank").desc).limit(1000)
-  //val resultDF = result.toDF("result_id", "rank").orderBy(col("rank").desc).limit(1000)
-  resultdf.show(10)
-  print(" done with page rank ")
-
-//  val users = spark.read.bigquery(baseQuery + "users").select(
-//    $"id",
-//    $"display_name",
-//    $"reputation",
-//    $"up_votes",
-//    $"down_votes"
-//    ).where($"id".isNotNull)
-//  println("load users ")
-//
-//  val usersWithRank = resultdf.as("result")
-//    .join(users.as("users"),
-//          resultdf("result_id") === users("id")
-//          )
-//    .select("result.rank",
-//      "result.result_id",
-//            "users.display_name",
-//            "users.reputation",
-//            "users.up_votes",
-//            "users.down_votes"
-//            ).orderBy(col("result.rank").desc)
-//  println(" join users ")
-//  usersWithRank.show(10)
+  val result = iterativePageRank[String](QandAGroup.map(x => (x._1,x._2._1)),10).toDF("result_id", "rank").limit(1000)
+  val resultdf = result.toDF("result_id", "rank").orderBy(col("rank").desc).limit(1000)
 
 
-  //Util.writeToFile(usersWithRank, resourcePath + "pageRank")
+  val users = spark.read.bigquery(baseQuery + "users").select(
+    $"id",
+    $"display_name",
+    $"reputation",
+    $"up_votes",
+    $"down_votes"
+    ).where($"id".isNotNull)
+
+  val usersWithRank = resultdf.as("result")
+    .join(users.as("users"),
+          resultdf("result_id") === users("id")
+          )
+    .select("result.rank",
+      "result.result_id",
+            "users.display_name",
+            "users.reputation",
+            "users.up_votes",
+            "users.down_votes"
+            ).orderBy(col("result.rank").desc)
+  usersWithRank.show(10)
+
+
+  Util.writeToFile(usersWithRank, resourcePath + "pageRank10rounds")
+
+  def iterativePageRank[T: ClassTag](df: RDD[(T, Iterable[T])], iter: Int): RDD[(T, Double)] = {
+    var ranks: RDD[(T, Double)] = df.mapValues(_ => 1.0)
+    for (_ <- 1 to iter) {
+      val contribs = df.join(ranks).values.flatMap { case (list, rank) =>
+        val size = list.size
+        list.map(id => (id, rank / size))
+      }
+      ranks = contribs.reduceByKey(_ + _).mapValues(0.15 + 0.85 * _)
+    }
+    ranks
+  }
+
 
   def pageRank[T: ClassTag](df: RDD[(T, (Iterable[T], Double))]): RDD[(T, (Iterable[T], Double))] = {
 
@@ -106,7 +111,11 @@ object main extends App {
       if(_) 0 else 1}
     val sumScore: Int = score.sum().toInt
 
-    if (sumScore > threshold){
+    if (iter > 100){
+      println("-- running for too long --")
+      (subsequent,iter)
+    }
+    else if (sumScore > threshold){
       println(" -- not converge yet -- ")
       println(" -- run iteration " + iter + 2)
       convergence(subsequent, threshold, iter + 2)
